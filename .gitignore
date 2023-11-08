@@ -3,3 +3,5 @@ regnety_006_v1.09_model.pkl
 data/inference_scenes/*
 training data/*
 planitary_computer_key.txt
+models/*.pkl
+models/*.pth
