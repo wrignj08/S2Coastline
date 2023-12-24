@@ -5,3 +5,5 @@ training data/*
 planitary_computer_key.txt
 models/*.pkl
 models/*.pth
+*DS_Store
+*.pyc

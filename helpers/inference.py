@@ -42,15 +42,15 @@ stds = [
     0.02285621,
     0.02902071,
 ]
-means = np.array(means)
-stds = np.array(stds)
+means = Tensor(means).unsqueeze(1).unsqueeze(1).unsqueeze(0).cuda().half()
+stds = Tensor(stds).unsqueeze(1).unsqueeze(1).unsqueeze(0).cuda().half()
 
 
 # %%
 def normalise(band_stack):
-    band_stack = band_stack.astype("float16") / 32767
-    band_stack = band_stack - means[:, np.newaxis, np.newaxis]
-    band_stack = band_stack / stds[:, np.newaxis, np.newaxis]
+    band_stack = band_stack / 32767
+    band_stack = band_stack - means
+    band_stack = band_stack / stds
     return band_stack
 
 
@@ -87,7 +87,7 @@ def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
     left = 0
     top_stop = False
     row_count = scene_size // (patch_size - overlap) + 1
-    print(row_count)
+    # print(row_count)
     b_bar = tqdm(total=row_count, desc="Making patches", leave=False)
     while not top_stop:
         left_stop = False
@@ -102,12 +102,15 @@ def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
             patch = band_stack[:, top : top + patch_size, left : left + patch_size]
 
             patches.append(patch)
+
             locations.append((top, left))
             left += patch_size - overlap
 
         left = 0
         top += patch_size - overlap
         b_bar.update(1)
+    # finish pbar
+    b_bar.update(b_bar.total - b_bar.n)
 
     return patches, locations
 
@@ -135,8 +138,7 @@ def stitch_preds(preds, locations, overlap=20, scene_size=10980):
 
 
 # %%
-def export_pred(output_path, pred_array, src_raster, binary=True):
-    profile = src_raster.profile.copy()
+def export_pred(output_path, pred_array, profile, binary=True):
     profile["nodata"] = None
     if binary:
         profile.update(dtype=rio.int8, count=1, compress="lzw", driver="GTiff")
@@ -148,21 +150,36 @@ def export_pred(output_path, pred_array, src_raster, binary=True):
             dst.write(pred_array, 1)
 
 
+def batch_patches(patches, batch_size=10):
+    batches = []
+    for i in range(0, len(patches), batch_size):
+        batches.append(np.array(patches[i : i + batch_size]))
+    return batches
+
+
 # %%
-def inference(patches, model):
+def inference(batches, model):
     preds = []
-    for patch in tqdm(patches, leave=False, desc="Inference"):
-        pred = model(Tensor(normalise(patch)).unsqueeze(0).cuda().half())
-        pred = pred.squeeze().cpu().detach().numpy()
-        preds.append(pred)
+    with torch.no_grad():
+        for batch in tqdm(batches, leave=False, desc="Inference"):
+            batch = Tensor(batch.astype(np.float32)).cuda().half()
+            batch = normalise(batch)
+            pred = model(batch)
+            pred = pred.cpu().detach().numpy()
+            # un-batch preds
+            for p in pred:
+                preds.append(p)
+
+            # preds.append(pred)
     return np.array(preds)
 
 
 # %%
 def run_inference(
     model_path,
-    raster_path,
     output_path,
+    bands,
+    profile,
     patch_size=1000,
     overlap=20,
     binary_output=True,
@@ -172,26 +189,31 @@ def run_inference(
 
     # %%
     model = pickle.load(open(Path.cwd() / f"models/{model_name}", "rb")).half().cuda()
+    model.eval()
 
     # %%
 
-    output_path = Path(str(raster_path).replace(".tif", "_pred.tif"))
+    # output_path = Path(str(raster_path).replace(".tif", "_pred.tif"))
 
-    src_raster = rio.open(raster_path)
-    band_stack = src_raster.read()
+    band_stack = bands
+
     scene_size = band_stack.shape[-1]
 
     patches, locations = make_patches(band_stack, patch_size, overlap, scene_size)
 
     del band_stack
 
-    preds = inference(patches, model)
+    batches = batch_patches(patches, batch_size=10)
     del patches
+
+    preds = inference(batches, model)
+
     pred_array = stitch_preds(preds, locations, overlap, scene_size)
-    export_pred(output_path, pred_array, src_raster, binary_output)
+    export_pred(output_path, pred_array, profile, binary_output)
     del pred_array
     del preds
     gc.collect()
+
     return output_path
 
 

@@ -78,7 +78,8 @@ def get_band(href, attempt=0):
 
 
 def downlaod_bands(items_with_tide, time_steps, required_bands):
-    bands = []
+    bands = []  # _, row = row
+
     profile = {}
     pbar = tqdm(total=time_steps * len(required_bands), leave=False)
     for id, row in items_with_tide.iterrows():
@@ -112,8 +113,8 @@ def split_by_orbits(items):
     return orbits
 
 
-def export_tif(bands, profile, export_path):
-    array = np.array(bands)
+def export_tif(array, profile, export_path):
+    # array = np.array(bands)
     profile.update(count=array.shape[0])
     with rio.open(export_path, "w", **profile) as dst:
         dst.write(array)
@@ -125,18 +126,16 @@ def download_scene(
     time_steps,
     extract_start_year,
     extract_end_year,
-    export_dir,
     required_bands,
     world_tides_api_key,
 ):
-    _, row = row
     centroid = row.geometry.centroid
-    export_path = export_dir / f"{row.Name}_{extract_start_year}_{extract_end_year}.tif"
-    print(export_path)
+    #
+    # print(export_path)
 
-    if export_path.exists():
-        print(f"File exists for {row.Name}")
-        return
+    # if export_path.exists():
+    #     print(f"File exists for {row.Name}")
+    #     return
 
     # Sentinel-2 query parameters
     query = {
@@ -148,7 +147,7 @@ def download_scene(
     catalog = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
     )
-    scenes = catalog.search(**query).get_all_items()
+    scenes = catalog.search(**query).item_collection()
     # break
     if len(scenes) == 0:
         return
@@ -182,50 +181,51 @@ def download_scene(
     all_orbits_bands = np.array(all_orbits_bands)
     all_orbits_bands = np.moveaxis(all_orbits_bands, 0, 1)
 
-    merged_bands = []
-    for multi_orbit_bands in all_orbits_bands:
+    # merged_bands = []
+    out_shape = (target_bands, *all_orbits_bands.shape[2:])
+    out_array = np.zeros(out_shape, dtype=np.uint16)
+    for index, multi_orbit_bands in enumerate(all_orbits_bands):
         target_array = np.zeros(multi_orbit_bands.shape[1:])
         for band in multi_orbit_bands:
             target_array[target_array == 0] = band[target_array == 0]
-        merged_bands.append(target_array)
+        # merged_bands.append(target_array)
+        out_array[index] = target_array
+    del all_orbits_bands
     # merged_bands = np.array(merged_bands)
 
-    if len(merged_bands) == target_bands:
-        export_tif(merged_bands, profile, export_path)
-    else:
+    if out_array.shape[0] != target_bands:
         print(f"Failed to download {row.Name}")
-    return export_path
+        return None
+
+    return out_array, profile
+
     # break
 
 
-def download_row(row, tide_key_path, export_dir):
+def download_row(row, tide_key_path, extract_start_year, extract_end_year):
     world_tides_api_key = tide_key_path.read_text().strip()
 
     # %%
     # this is output dir, each scene will end up about 2Gb so make sure you have space!
-    export_dir.mkdir(exist_ok=True, parents=True)
 
     # %%
     required_bands = ["B03", "B08"]
     target_bands = 12
     time_steps = 6
-    extract_start_year = 2022
-    extract_end_year = 2022
 
     # %%
 
     # %%
     # call download_scene with a thread pool
     # download_scene(s2_grid.iloc[0], target_bands, time_steps, extract_start_year, extract_end_year, export_dir)
-    export_path = download_scene(
+    return download_scene(
         row,
         target_bands,
         time_steps,
         extract_start_year,
         extract_end_year,
-        export_dir,
         required_bands,
         world_tides_api_key,
     )
-    return export_path
+    # return export_path
     # %%
