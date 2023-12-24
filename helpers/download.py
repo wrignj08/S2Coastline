@@ -67,7 +67,8 @@ def get_band(href, attempt=0):
         singed_href = planetary_computer.sign(href)
         with rio.open(singed_href) as src:
             return src.read(1), src.profile.copy()
-    except:
+    except Exception as e:
+        print(e)
         print(f"Failed to open {href}")
         if attempt < 3:
             print(f"Trying again {attempt+1}")
