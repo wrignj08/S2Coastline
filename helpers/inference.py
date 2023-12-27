@@ -158,15 +158,45 @@ def batch_patches(patches, batch_size=10):
 
 
 # %%
+# def inference(batches, model):
+#     preds = []
+#     with torch.no_grad():
+#         for batch in tqdm(batches, leave=False, desc="Inference"):
+#             batch = Tensor(batch.astype(np.float32)).cuda().half()
+#             batch = normalise(batch)
+#             pred = model(batch)
+#             pred = pred.cpu().detach().numpy()
+#             # un-batch preds
+#             for p in pred:
+#                 preds.append(p)
+
+#             # preds.append(pred)
+#     return np.array(preds)
+
+
 def inference(batches, model):
     preds = []
+
+    tta_depth = 6
     with torch.no_grad():
         for batch in tqdm(batches, leave=False, desc="Inference"):
             batch = Tensor(batch.astype(np.float32)).cuda().half()
             batch = normalise(batch)
-            pred = model(batch)
-            pred = pred.cpu().detach().numpy()
-            # un-batch preds
+
+            tta_preds = np.zeros(
+                (tta_depth, batch.shape[0], 1, batch.shape[-2], batch.shape[-1])
+            )
+            for tta in range(tta_depth):
+                first_two = batch[:, :2, :, :]
+                rest = batch[:, 2:, :, :]
+                # batch = np.concatenate((rest, first_two), axis=1)
+                batch = torch.cat((rest, first_two), dim=1)
+                pred = model(batch)
+                pred = pred.cpu().detach().numpy()
+                tta_preds[tta] = pred
+                # un-batch preds
+            pred = np.mean(tta_preds, axis=0)
+
             for p in pred:
                 preds.append(p)
 
