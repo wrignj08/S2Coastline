@@ -1,0 +1,15 @@
+{
+    "cSpell.words": [
+        "astype",
+        "dataframe",
+        "dtype",
+        "geopandas",
+        "iloc",
+        "iterrows",
+        "moveaxis",
+        "ndarray",
+        "pbar",
+        "rasterio",
+        "tqdm"
+    ]
+}

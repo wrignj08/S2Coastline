@@ -1,93 +1,25 @@
-import requests
+from typing import Any, Dict, List, Optional, Tuple
+from pandas import DataFrame
 import planetary_computer
 import pystac_client
 import numpy as np
-import requests
-import json
-from datetime import datetime
 import shapely
 import pandas as pd
 import rasterio as rio
 from tqdm.auto import tqdm
-import sqlite3
+from helpers.tide import add_tide_height, setup_database
 
 
-def add_cloud_pct(items_df):
+def add_cloud_pct(items_df: DataFrame) -> DataFrame:
     items_df["cloud_pct"] = items_df.apply(
         lambda row: row.iloc[0].properties["eo:cloud_cover"], axis=1
     )
     return items_df
 
 
-def setup_database(db_path):
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS tide_data
-                        (date TEXT, latitude REAL, longitude REAL, tide_height REAL)"""
-        )
-        conn.commit()
-        return conn
-    except Exception as e:
-        print(f"Error setting up database: {e}")
-        return None
-
-
-def query_tide_data(cursor, date, latitude, longitude):
-    """Query the local database for tide data."""
-    cursor.execute(
-        "SELECT tide_height FROM tide_data WHERE date = ? AND latitude = ? AND longitude = ?",
-        (date, latitude, longitude),
-    )
-    result = cursor.fetchone()
-    return result[0] if result else None
-
-
-def store_tide_data(cursor, date, latitude, longitude, tide_height, conn):
-    """Store new tide data in the local database."""
-    cursor.execute(
-        "INSERT INTO tide_data (date, latitude, longitude, tide_height) VALUES (?, ?, ?, ?)",
-        (date, latitude, longitude, tide_height),
-    )
-    conn.commit()
-
-
-def add_tide_height(cursor, conn, centroid, items_df, world_tides_api_key):
-    results = []
-    lon, lat = centroid.coords[0]
-    for id, item in items_df.iterrows():
-        dt_str = item.iloc[0].to_dict()["properties"]["datetime"]
-        dt_obj = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        date = dt_obj.date().isoformat()
-
-        # Check the database first
-        tide_height = query_tide_data(cursor, date, lat, lon)
-        if tide_height is None:
-            # If not in the database, fetch from API and store
-            url = f"https://www.worldtides.info/api/v3?heights&date={date}&lat={lat}&lon={lon}&key={world_tides_api_key}"
-            response = requests.get(url)
-            data = json.loads(response.text)
-
-            min_diff = float("inf")
-            closest_entry = {}
-            target_timestamp = dt_obj.timestamp()
-            for entry in data["heights"]:
-                diff = abs(entry["dt"] - target_timestamp)
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_entry = entry
-
-            tide_height = closest_entry["height"]
-            store_tide_data(cursor, date, lat, lon, tide_height, conn)
-
-        results.append(tide_height)
-
-    items_df["tide_height"] = results
-    return items_df
-
-
-def get_band(href, attempt=0):
+def get_band(
+    href: str, attempt: int = 0
+) -> Tuple[Optional[np.ndarray], Optional[Dict[str, Any]]]:
     try:
         singed_href = planetary_computer.sign(href)
         with rio.open(singed_href) as src:
@@ -145,23 +77,7 @@ def export_tif(array, profile, export_path):
         dst.write(array)
 
 
-def download_scene(
-    row,
-    target_bands,
-    time_steps,
-    extract_start_year,
-    extract_end_year,
-    required_bands,
-    world_tides_api_key,
-):
-    db_path = "tide_data.db"
-    conn = setup_database(db_path)
-
-    if conn is None:
-        raise Exception("Failed to set up the database.")
-    cursor = conn.cursor()
-
-    centroid = row.geometry.centroid
+def get_scenes(row, extract_start_year, extract_end_year):
     bounds = row.geometry.buffer(-0.05)
 
     query = {
@@ -174,11 +90,12 @@ def download_scene(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
     )
     scenes = catalog.search(**query).item_collection()
+    return scenes
 
-    if len(scenes) == 0:
-        return
 
-    scenes_by_orbit = split_by_orbits(scenes)
+def download_each_orbit(
+    scenes_by_orbit, row, world_tides_api_key, time_steps, required_bands
+):
     all_orbits_bands = []
     profile = {}
     for orbit, scenes in scenes_by_orbit.items():
@@ -191,9 +108,7 @@ def download_scene(
         items_df = items_df.sort_values(by="cloud_pct", ascending=True)
         # only keep the top 20 scenes
         items_df = items_df[:20]
-        items_df = add_tide_height(
-            cursor, conn, centroid, items_df, world_tides_api_key
-        )
+        items_df = add_tide_height(row.geometry.centroid, items_df, world_tides_api_key)
         # round tide height to nearest 10
         items_df["cloud_pct"] = items_df["cloud_pct"].apply(
             lambda x: round(x / 10) * 10
@@ -206,25 +121,23 @@ def download_scene(
         bands, profile = download_bands(items_df, time_steps, required_bands)
         all_orbits_bands.append(bands)
 
+    return all_orbits_bands, profile
+
+
+def combine_orbits(all_orbits_bands, target_bands):
     all_orbits_bands = np.array(all_orbits_bands)
     all_orbits_bands = np.moveaxis(all_orbits_bands, 0, 1)
 
     out_shape = (target_bands, *all_orbits_bands.shape[2:])
     out_array = np.zeros(out_shape, dtype=np.uint16)
+
     for index, multi_orbit_bands in enumerate(all_orbits_bands):
         target_array = np.zeros(multi_orbit_bands.shape[1:])
         for band in multi_orbit_bands:
             target_array[target_array == 0] = band[target_array == 0]
         out_array[index] = target_array
-    del all_orbits_bands
 
-    if out_array.shape[0] != target_bands:
-        print(f"Failed to download {row.Name}")
-        return None
-
-    conn.close()
-
-    return out_array, profile
+    return out_array
 
 
 def download_row(row, tide_key_path, extract_start_year, extract_end_year):
@@ -234,12 +147,49 @@ def download_row(row, tide_key_path, extract_start_year, extract_end_year):
     target_bands = 12
     time_steps = 6
 
-    return download_scene(
+    scenes = get_scenes(row, extract_start_year, extract_end_year)
+
+    if len(scenes) == 0:
+        return
+
+    scenes_by_orbit = split_by_orbits(scenes)
+
+    all_orbits_bands, profile = download_each_orbit(
+        scenes_by_orbit,
         row,
-        target_bands,
-        time_steps,
-        extract_start_year,
-        extract_end_year,
-        required_bands,
         world_tides_api_key,
+        time_steps,
+        required_bands,
     )
+
+    out_array = combine_orbits(all_orbits_bands, target_bands)
+
+    del all_orbits_bands
+
+    if out_array.shape[0] != target_bands:
+        print(f"Failed to download {row.Name}")
+        return None
+
+    return out_array, profile
+
+
+def make_fake_data(*args):
+    """
+    Generate fake data array and profile.
+
+    Returns:
+        array (numpy.ndarray): Fake data array.
+        profile (dict): Profile containing metadata for the array.
+    """
+    array = np.random.randint(0, 10000, (12, 10980, 10980)).astype(np.uint16)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "uint16",
+        "nodata": None,
+        "width": 10980,
+        "height": 10980,
+        "count": 12,
+        "crs": "EPSG:32630",
+        "transform": rio.transform.from_origin(499980.0, 4500210.0, 10.0, 10.0),  # type: ignore
+    }
+    return array, profile

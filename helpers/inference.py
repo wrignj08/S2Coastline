@@ -7,48 +7,42 @@ import pickle
 import gc
 from torch import Tensor
 
-MEANS = [
-    0.09561849,
-    0.09644007,
-    0.09435602,
-    0.09631168,
-    0.09356618,
-    0.09504625,
-    0.09509373,
-    0.09508776,
-    0.0911776,
-    0.091464,
-    0.09334985,
-    0.09400712,
-]
-STDS = [
-    0.02369863,
-    0.03057647,
-    0.0244495,
-    0.03169953,
-    0.02380443,
-    0.03068336,
-    0.02376207,
-    0.03026029,
-    0.02387124,
-    0.03011121,
-    0.02285621,
-    0.02902071,
-]
+BAND_IDS = [2, 4]
+MEANS = np.array(
+    [
+        0.09320524,
+        0.09936677,
+        0.09359581,
+        0.09989304,
+        0.09392498,
+        0.0994415,
+        0.09318926,
+        0.09834657,
+        0.09105494,
+        0.09607462,
+        0.09178863,
+        0.09679132,
+    ]
+)
+STDS = np.array(
+    [
+        0.02172433,
+        0.02760383,
+        0.02274428,
+        0.02833729,
+        0.02223172,
+        0.0276719,
+        0.02222958,
+        0.02731097,
+        0.02183141,
+        0.02698776,
+        0.02132447,
+        0.02619315,
+    ]
+)
 
 
 def default_device():
-    """
-    Determines the best available device for computation.
-
-    This function checks if CUDA or MPS (Metal Performance Shaders) are
-    available on the current machine, in that order. If neither are available,
-    it defaults to using the CPU.
-
-    Returns:
-        torch.device: The device to be used for computation. This can be a CUDA
-        device, MPS device or CPU.
-    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -56,13 +50,15 @@ def default_device():
     return torch.device("cpu")
 
 
-def normalise(band_stack, device):
-    means = Tensor(MEANS).unsqueeze(1).unsqueeze(1).unsqueeze(0).to(device).half()
-    stds = Tensor(STDS).unsqueeze(1).unsqueeze(1).unsqueeze(0).to(device).half()
-    band_stack = band_stack / 32767
-    band_stack = band_stack - means
-    band_stack = band_stack / stds
-    return band_stack
+def normalize(band_stack, device):
+    repetitions = [1, 6]
+    means = np.repeat(MEANS[BAND_IDS], repetitions)
+    stds = np.repeat(STDS[BAND_IDS], repetitions)
+
+    means_tensor = Tensor(means).view(1, -1, 1, 1).to(device).half()
+    stds_tensor = Tensor(stds).view(1, -1, 1, 1).to(device).half()
+
+    return (band_stack / 32767 - means_tensor) / stds_tensor
 
 
 def create_gradient_mask(patch_size, patch_overlap_px):
@@ -90,37 +86,19 @@ def create_gradient_mask(patch_size, patch_overlap_px):
 
 
 def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
-    patches = []
-    locations = []
-    top = 0
-    left = 0
-    top_stop = False
+    patches, locations = [], []
     row_count = scene_size // (patch_size - overlap) + 1
-
     b_bar = tqdm(total=row_count, desc="Making patches", leave=False)
-    while not top_stop:
-        left_stop = False
-        if top + patch_size > scene_size:
-            top = scene_size - patch_size
-            top_stop = True
 
-        while not left_stop:
-            if left + patch_size > scene_size:
-                left = scene_size - patch_size
-                left_stop = True
+    for top in range(0, scene_size - patch_size + 1, patch_size - overlap):
+        for left in range(0, scene_size - patch_size + 1, patch_size - overlap):
             patch = band_stack[:, top : top + patch_size, left : left + patch_size]
-
             patches.append(patch)
-
             locations.append((top, left))
-            left += patch_size - overlap
 
-        left = 0
-        top += patch_size - overlap
         b_bar.update(1)
-    # finish pbar
-    b_bar.update(b_bar.total - b_bar.n)
 
+    b_bar.close()
     return patches, locations
 
 
@@ -165,35 +143,27 @@ def batch_patches(patches, batch_size=10):
 
 
 def inference(batches, model, device):
-    preds = []
-
+    model.eval()
     tta_depth = 6
+    all_preds = []
+
     with torch.no_grad():
         for batch in tqdm(batches, leave=False, desc="Inference"):
-            batch = Tensor(batch.astype(np.float32)).to(device).half()
-            batch = normalise(batch, device)
-            # make array to store tta preds, shape is (tta_depth, batch_size, classes, patch_size, patch_size)
-            tta_preds = np.zeros(
-                (tta_depth, batch.shape[0], 1, batch.shape[-2], batch.shape[-1])
-            )
-            # reorder the bands for each tta
+            batch = torch.tensor(batch.astype(np.float32)).to(device).half()
+            batch = normalize(batch, device)
+
+            tta_preds = []
             for tta in range(tta_depth):
-                first_two = batch[:, :2, :, :]
-                rest = batch[:, 2:, :, :]
-                batch = torch.cat((rest, first_two), dim=1)
+                # Creating augmented batch for TTA
+                augmented_batch = torch.roll(batch, shifts=2 * tta, dims=1)
 
-                pred = model(batch)
-                # push to cpu and detach from graph
-                pred = pred.cpu().detach().numpy()
-                # store in tta_preds
-                tta_preds[tta] = pred
+                tta_preds.append(model(augmented_batch))
 
-            pred = np.mean(tta_preds, axis=0)
+            # Calculating the mean across all TTA predictions
+            mean_pred = torch.stack(tta_preds).mean(dim=0).cpu().numpy()
+            all_preds.extend(mean_pred)
 
-            for p in pred:
-                preds.append(p)
-
-    return np.array(preds)
+    return np.array(all_preds)
 
 
 def run_inference(
@@ -211,17 +181,20 @@ def run_inference(
     model_name = model_path.name
 
     model = (
-        pickle.load(open(Path.cwd() / f"models/{model_name}", "rb")).half().to(device)
+        pickle.load(
+            open(Path.cwd() / f"models/{model_name}", "rb"),
+        )
+        .half()
+        .to(device)
     )
-    model.eval()
+    model_path = Path.cwd() / f"models/{model_name}"
+    print(device)
 
-    band_stack = bands
+    scene_size = bands.shape[-1]
 
-    scene_size = band_stack.shape[-1]
+    patches, locations = make_patches(bands, patch_size, overlap, scene_size)
 
-    patches, locations = make_patches(band_stack, patch_size, overlap, scene_size)
-
-    del band_stack
+    del bands
 
     batches = batch_patches(patches, batch_size=10)
     del patches
@@ -229,6 +202,7 @@ def run_inference(
     preds = inference(batches, model, device)
 
     pred_array = stitch_preds(preds, locations, overlap, scene_size)
+
     export_pred(output_path, pred_array, profile, binary_output)
     del pred_array
     del preds
