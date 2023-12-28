@@ -7,7 +7,7 @@ import shapely
 import pandas as pd
 import rasterio as rio
 from tqdm.auto import tqdm
-from helpers.tide import add_tide_height, setup_database
+from helpers.tide import add_tide_height
 
 
 def add_cloud_pct(items_df: DataFrame) -> DataFrame:
@@ -35,11 +35,11 @@ def get_band(
             return None, None
 
 
-def download_bands(items_with_tide, time_steps, required_bands):
+def download_bands(items_with_tide, time_steps, required_bands, pbar):
     bands = []
 
     profile = {}
-    pbar = tqdm(total=time_steps * len(required_bands), leave=False)
+    # pbar = tqdm(total=time_steps * len(required_bands), leave=False)
     for id, row in items_with_tide.iterrows():
         scene_bands = []
 
@@ -98,6 +98,7 @@ def download_each_orbit(
 ):
     all_orbits_bands = []
     profile = {}
+    pbar = tqdm(total=len(scenes_by_orbit) * 12, leave=False, desc="Downloading")
     for orbit, scenes in scenes_by_orbit.items():
         # make df from items in orbit
         items_df = pd.DataFrame(scenes)
@@ -118,7 +119,7 @@ def download_each_orbit(
             by=["cloud_pct", "tide_height"], ascending=[True, False]
         )
         # download the required bands
-        bands, profile = download_bands(items_df, time_steps, required_bands)
+        bands, profile = download_bands(items_df, time_steps, required_bands, pbar)
         all_orbits_bands.append(bands)
 
     return all_orbits_bands, profile
@@ -150,7 +151,7 @@ def download_row(row, tide_key_path, extract_start_year, extract_end_year):
     scenes = get_scenes(row, extract_start_year, extract_end_year)
 
     if len(scenes) == 0:
-        return
+        raise Exception(f"No scenes found for {row.Name}")
 
     scenes_by_orbit = split_by_orbits(scenes)
 
@@ -167,8 +168,7 @@ def download_row(row, tide_key_path, extract_start_year, extract_end_year):
     del all_orbits_bands
 
     if out_array.shape[0] != target_bands:
-        print(f"Failed to download {row.Name}")
-        return None
+        raise Exception(f"Failed to download {row.Name}")
 
     return out_array, profile
 

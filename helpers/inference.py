@@ -151,14 +151,18 @@ def batch_patches(patches, batch_size=10):
     return batches
 
 
-def inference(batches, model, device):
+def inference(patches, model, device, batch_size=10):
     model.eval()
     tta_depth = 6
     all_preds = []
+    batch_count = len(patches) // batch_size
 
     with torch.no_grad():
-        for batch in tqdm(batches, leave=False, desc="Inference"):
-            batch = torch.tensor(batch.astype(np.float32)).to(device).half()
+        for batch_id in tqdm(range(batch_count), leave=False, desc="Inference"):
+            batch = patches[batch_id * batch_size : (batch_id + 1) * batch_size]
+            batch = np.array(batch).astype(np.float32)
+
+            batch = torch.tensor(batch).to(device).half()
             batch = normalize(batch, device)
 
             tta_preds = []
@@ -204,10 +208,7 @@ def run_inference(
 
     del bands
 
-    batches = batch_patches(patches, batch_size=10)
-    del patches
-
-    preds = inference(batches, model, device)
+    preds = inference(patches, model, device, batch_size=10)
 
     pred_array = stitch_preds(preds, locations, overlap, scene_size)
 
