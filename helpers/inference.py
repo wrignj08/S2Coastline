@@ -51,9 +51,8 @@ def default_device():
 
 
 def normalize(band_stack, device):
-    repetitions = [1, 6]
-    means = np.repeat(MEANS[BAND_IDS], repetitions)
-    stds = np.repeat(STDS[BAND_IDS], repetitions)
+    means = np.tile(MEANS[BAND_IDS], 6)
+    stds = np.tile(STDS[BAND_IDS], 6)
 
     means_tensor = Tensor(means).view(1, -1, 1, 1).to(device).half()
     stds_tensor = Tensor(stds).view(1, -1, 1, 1).to(device).half()
@@ -87,15 +86,25 @@ def create_gradient_mask(patch_size, patch_overlap_px):
 
 def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
     patches, locations = [], []
-    row_count = scene_size // (patch_size - overlap) + 1
+    row_count = (scene_size - overlap) // (patch_size - overlap)
     b_bar = tqdm(total=row_count, desc="Making patches", leave=False)
 
-    for top in range(0, scene_size - patch_size + 1, patch_size - overlap):
-        for left in range(0, scene_size - patch_size + 1, patch_size - overlap):
-            patch = band_stack[:, top : top + patch_size, left : left + patch_size]
+    top = 0
+    while top < scene_size:
+        left = 0
+        while left < scene_size:
+            adjusted_top = min(top, scene_size - patch_size)
+            adjusted_left = min(left, scene_size - patch_size)
+            patch = band_stack[
+                :,
+                adjusted_top : adjusted_top + patch_size,
+                adjusted_left : adjusted_left + patch_size,
+            ]
             patches.append(patch)
-            locations.append((top, left))
+            locations.append((adjusted_top, adjusted_left))
+            left += patch_size - overlap
 
+        top += patch_size - overlap
         b_bar.update(1)
 
     b_bar.close()
@@ -188,7 +197,6 @@ def run_inference(
         .to(device)
     )
     model_path = Path.cwd() / f"models/{model_name}"
-    print(device)
 
     scene_size = bands.shape[-1]
 
