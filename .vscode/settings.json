@@ -2,6 +2,7 @@
     "cSpell.words": [
         "astype",
         "dataframe",
+        "dstack",
         "dtype",
         "geopandas",
         "iloc",

@@ -141,6 +141,30 @@ def combine_orbits(all_orbits_bands, target_bands):
     return out_array
 
 
+def fill_missing_data(combined_arrays, time_steps):
+    target_bands = combined_arrays.shape[0]
+    channels = target_bands // time_steps
+    filled_array = np.zeros_like(combined_arrays)
+
+    for channel in range(channels):
+        one_channel = combined_arrays[channel::channels]
+        fall_back_values = np.zeros_like(one_channel[0])
+        # sort one_channel index 0 by non zero values
+        non_zero_counts = np.array([np.count_nonzero(slice) for slice in one_channel])
+        sorted_indices = np.argsort(-non_zero_counts)
+
+        for band_id in sorted_indices:
+            band = one_channel[band_id]
+            fall_back_values[fall_back_values == 0] = band[fall_back_values == 0]
+
+        for id, band in enumerate(one_channel):
+            band[band == 0] = fall_back_values[band == 0]
+            one_channel[id] = band
+        filled_array[channel::channels] = one_channel
+
+    return filled_array
+
+
 def download_row(row, tide_key_path, extract_start_year, extract_end_year):
     world_tides_api_key = tide_key_path.read_text().strip()
 
@@ -163,14 +187,16 @@ def download_row(row, tide_key_path, extract_start_year, extract_end_year):
         required_bands,
     )
 
-    out_array = combine_orbits(all_orbits_bands, target_bands)
+    combined_arrays = combine_orbits(all_orbits_bands, target_bands)
+
+    combined_arrays = fill_missing_data(combined_arrays, time_steps)
 
     del all_orbits_bands
 
-    if out_array.shape[0] != target_bands:
+    if combined_arrays.shape[0] != target_bands:
         raise Exception(f"Failed to download {row.Name}")
 
-    return out_array, profile
+    return combined_arrays, profile
 
 
 def make_fake_data(*args):
