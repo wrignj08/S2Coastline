@@ -72,8 +72,8 @@ def from_vector(
     inf_thread = Thread()
 
     total_pbar = tqdm(desc="Total Progress", total=len(filter_names), position=0)
-    dl_pbar = tqdm(desc="Downloading", position=1)
-    inf_pbar = tqdm(desc="Inference", position=2)
+    dl_pbar = tqdm(desc="Downloading", position=1, total=10)
+    inf_pbar = tqdm(desc="Inference", position=2, total=10)
     patch_tqdm(dl_pbar)
     patch_tqdm(inf_pbar)
 
