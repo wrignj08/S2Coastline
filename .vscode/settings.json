@@ -5,12 +5,15 @@
         "dstack",
         "dtype",
         "geopandas",
+        "hrefs",
         "iloc",
         "iterrows",
         "moveaxis",
         "ndarray",
         "pbar",
+        "preds",
         "rasterio",
+        "stds",
         "tqdm"
     ]
 }
