@@ -98,7 +98,7 @@ def make_patches(
 
     if pbar is None:
         pbar = tqdm(leave=False)
-
+    pbar.reset()
     pbar.total = row_count
     pbar.set_description("Making patches")
 
@@ -166,6 +166,7 @@ def export_pred(
 ) -> None:
     if pbar is None:
         pbar = tqdm(leave=False)
+    pbar.reset()
     pbar.total = 1
     pbar.set_description("Exporting")
     profile["nodata"] = None
@@ -256,6 +257,8 @@ def run_inference(
     pred_array = stitch_preds(preds, locations, overlap, scene_size, pbar=pbar)
 
     export_pred(output_path, pred_array, profile, binary_output, pbar=pbar)
+    pbar.reset()
+    pbar.set_description("Waiting to start Inference")
     del pred_array
     del preds
     gc.collect()
