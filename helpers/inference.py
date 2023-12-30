@@ -1,12 +1,13 @@
+import gc
+import pickle
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 import rasterio as rio
 import torch
-import numpy as np
-from tqdm.auto import tqdm
-from pathlib import Path
-import pickle
-import gc
 from torch import Tensor
-from typing import List, Tuple, Dict, Any, Optional
+from tqdm.auto import tqdm
 
 BAND_IDS = [2, 4]
 MEANS = np.array(
@@ -86,11 +87,20 @@ def create_gradient_mask(patch_size: int, patch_overlap_px: int) -> np.ndarray:
 
 
 def make_patches(
-    band_stack: np.ndarray, patch_size: int, overlap: int = 20, scene_size: int = 10980
+    band_stack: np.ndarray,
+    pbar: Optional[tqdm],
+    patch_size: int,
+    overlap: int = 20,
+    scene_size: int = 10980,
 ) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
     patches, locations = [], []
     row_count = (scene_size - overlap) // (patch_size - overlap)
-    b_bar = tqdm(total=row_count, desc="Making patches", leave=False)
+
+    if pbar is None:
+        pbar = tqdm(leave=False)
+
+    pbar.total = row_count
+    pbar.set_description("Making patches")
 
     top = 0
     while top < scene_size:
@@ -108,9 +118,10 @@ def make_patches(
             left += patch_size - overlap
 
         top += patch_size - overlap
-        b_bar.update(1)
+        pbar.update(1)
 
-    b_bar.close()
+    pbar.update(row_count - pbar.n)
+
     return patches, locations
 
 
@@ -119,14 +130,19 @@ def stitch_preds(
     locations: List[Tuple[int, int]],
     overlap: int = 20,
     scene_size: int = 10980,
+    pbar: Optional[tqdm] = None,
 ) -> np.ndarray:
+    if pbar is None:
+        pbar = tqdm(leave=False)
+    pbar.reset()
+    pbar.total = len(preds)
+    pbar.set_description("Stitching")
+
     gradient = create_gradient_mask(preds[0].shape[-1], overlap)
     pred_array = np.zeros((scene_size, scene_size))
     count_tracker = np.zeros((scene_size, scene_size))
 
-    for pred, location in tqdm(
-        zip(preds, locations), leave=False, desc="Stitching", total=len(preds)
-    ):
+    for pred, location in zip(preds, locations):
         top, left = location
         pred_array[top : top + pred.shape[-1], left : left + pred.shape[-1]] = (
             pred_array[top : top + pred.shape[-1], left : left + pred.shape[-1]]
@@ -135,6 +151,7 @@ def stitch_preds(
         count_tracker[
             top : top + pred.shape[-1], left : left + pred.shape[-1]
         ] += gradient
+        pbar.update(1)
     pred_array = pred_array / count_tracker
 
     return pred_array
@@ -145,7 +162,12 @@ def export_pred(
     pred_array: np.ndarray,
     profile: Dict[str, Any],
     binary: bool = True,
+    pbar: Optional[tqdm] = None,
 ) -> None:
+    if pbar is None:
+        pbar = tqdm(leave=False)
+    pbar.total = 1
+    pbar.set_description("Exporting")
     profile["nodata"] = None
     if binary:
         profile.update(dtype=rio.int8, count=1, compress="lzw", driver="GTiff")
@@ -155,18 +177,29 @@ def export_pred(
         profile.update(dtype=rio.float32, count=1, compress="lzw", driver="GTiff")
         with rio.open(output_path, "w", **profile) as dst:
             dst.write(pred_array, 1)
+    pbar.update(1)
 
 
 def inference(
-    patches: List[np.ndarray], model, device: torch.device, batch_size: int = 10
+    patches: List[np.ndarray],
+    model,
+    device: torch.device,
+    batch_size: int = 10,
+    pbar: Optional[tqdm] = None,
 ) -> np.ndarray:
     model.eval()
     tta_depth = 6
     all_preds = []
     batch_count = len(patches) // batch_size
+    if pbar is None:
+        pbar = tqdm(leave=False)
+
+    pbar.reset()
+    pbar.total = batch_count
+    pbar.set_description("Inference")
 
     with torch.no_grad():
-        for batch_id in tqdm(range(batch_count), leave=False, desc="Inference"):
+        for batch_id in range(batch_count):
             batch = patches[batch_id * batch_size : (batch_id + 1) * batch_size]
             batch = np.array(batch).astype(np.float32)
 
@@ -183,6 +216,7 @@ def inference(
             # Calculating the mean across all TTA predictions
             mean_pred = torch.stack(tta_preds).mean(dim=0).cpu().numpy()
             all_preds.extend(mean_pred)
+            pbar.update(1)
 
     return np.array(all_preds)
 
@@ -195,32 +229,33 @@ def run_inference(
     patch_size: int = 1000,
     overlap: int = 500,
     binary_output: bool = True,
+    pbar: Optional[tqdm] = None,
     device: Optional[torch.device] = None,
 ) -> Path:
     if device is None:
         device = default_device()
-    model_name = model_path.name
 
     model = (
         pickle.load(
-            open(Path.cwd() / f"models/{model_name}", "rb"),
+            open(model_path, "rb"),
         )
         .half()
         .to(device)
     )
-    model_path = Path.cwd() / f"models/{model_name}"
+    if pbar is None:
+        pbar = tqdm(leave=False)
+
+    pbar.reset()
 
     scene_size = bands.shape[-1]
 
-    patches, locations = make_patches(bands, patch_size, overlap, scene_size)
+    patches, locations = make_patches(bands, pbar, patch_size, overlap, scene_size)
 
-    del bands
+    preds = inference(patches, model, device, batch_size=10, pbar=pbar)
 
-    preds = inference(patches, model, device, batch_size=10)
+    pred_array = stitch_preds(preds, locations, overlap, scene_size, pbar=pbar)
 
-    pred_array = stitch_preds(preds, locations, overlap, scene_size)
-
-    export_pred(output_path, pred_array, profile, binary_output)
+    export_pred(output_path, pred_array, profile, binary_output, pbar=pbar)
     del pred_array
     del preds
     gc.collect()

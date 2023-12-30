@@ -9,9 +9,11 @@
         "iloc",
         "iterrows",
         "moveaxis",
+        "ncols",
         "ndarray",
         "pbar",
         "preds",
+        "pystac",
         "rasterio",
         "stds",
         "tqdm"

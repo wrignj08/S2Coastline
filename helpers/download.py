@@ -1,19 +1,20 @@
-from typing import Any, Dict, List, Tuple
-from pandas import DataFrame
+from multiprocessing.pool import ThreadPool
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 import planetary_computer
 import pystac_client
-import numpy as np
-import shapely
-import pandas as pd
 import rasterio as rio
-from tqdm.auto import tqdm
-from helpers.tide import add_tide_height
+import shapely
 from geopandas import GeoSeries
-from typing import List, Dict, Any
+from pandas import DataFrame
 from pystac.item import Item
 from pystac.item_collection import ItemCollection
-from pathlib import Path
-from multiprocessing.pool import ThreadPool
+from tqdm.auto import tqdm
+
+from helpers.tide import add_tide_height
 
 
 def add_cloud_pct(items_df: DataFrame) -> DataFrame:
@@ -53,6 +54,7 @@ def download_bands_pool(
             for band, profile in bands_with_profile:
                 bands.append(band)
                 pbar.update(1)
+            pbar.refresh()
         except:
             print(f"Failed to download {item}")
             continue
@@ -108,12 +110,14 @@ def download_each_orbit(
     world_tides_api_key: str,
     time_steps: int,
     required_bands: List[str],
+    pbar: tqdm,
     band_count: int = 12,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     profile = {}
-    pbar = tqdm(
-        total=len(scenes_by_orbit) * band_count, leave=False, desc="Downloading"
-    )
+
+    pbar.reset()
+    pbar.total = len(scenes_by_orbit) * band_count
+    pbar.set_description(f"Downloading {row.Name}")
     all_orbits_bands = []
 
     for orbit, scenes in scenes_by_orbit.items():
@@ -137,6 +141,13 @@ def download_each_orbit(
         )
         # download the required bands
         bands, profile = download_bands_pool(items_df, time_steps, required_bands, pbar)
+
+        # check if any 0s in bands
+        if np.count_nonzero(bands) == bands.size:
+            # got entire scene, no need to continue
+            all_orbits_bands.append(bands)
+            pbar.update(band_count - pbar.n)
+            return np.array(all_orbits_bands), profile
         all_orbits_bands.append(bands)
 
     return np.array(all_orbits_bands), profile
@@ -193,7 +204,11 @@ def download_row(
     required_bands: List[str] = ["B03", "B08"],
     target_bands: int = 12,
     time_steps: int = 6,
+    pbar: Optional[tqdm] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    if pbar is None:
+        pbar = tqdm(leave=False)
+
     world_tides_api_key = tide_key_path.read_text().strip()
 
     scenes = get_scenes(row, extract_start_year, extract_end_year)
@@ -204,15 +219,12 @@ def download_row(
     scenes_by_orbit = split_by_orbits(scenes)
 
     all_orbits_bands, profile = download_each_orbit(
-        scenes_by_orbit,
-        row,
-        world_tides_api_key,
-        time_steps,
-        required_bands,
+        scenes_by_orbit, row, world_tides_api_key, time_steps, required_bands, pbar
     )
-
+    pbar.set_description(f"Combining {row.Name}")
     combined_arrays = combine_orbits(all_orbits_bands, target_bands)
 
+    pbar.set_description(f"Filling {row.Name}")
     combined_arrays = fill_missing_data(combined_arrays, time_steps)
 
     del all_orbits_bands

@@ -1,10 +1,40 @@
 from pathlib import Path
 from threading import Thread
-from tqdm.auto import tqdm
-from geopandas import GeoDataFrame
 from typing import List
-from helpers.inference import run_inference
+
+from geopandas import GeoDataFrame
+from tqdm.auto import tqdm
+
 from helpers.download import download_row
+from helpers.inference import run_inference
+
+
+def patch_tqdm(tqdm_instance: tqdm) -> None:
+    """
+    Patch the display method of a tqdm instance to handle dynamic total updates.
+    This function is specifically for tqdm.notebook.tqdm instances.
+
+    Parameters:
+    tqdm_instance (tqdm or tqdm.notebook.tqdm): The tqdm instance to be patched.
+    """
+    # Check if the instance is from tqdm.notebook
+    if hasattr(tqdm_instance, "container"):
+        original_display = tqdm_instance.display
+
+        def new_display(*args, **kwargs):
+            if hasattr(tqdm_instance, "container") and tqdm_instance.total is not None:
+                _, pbar, _ = tqdm_instance.container.children  # type: ignore
+                pbar.max = float(tqdm_instance.total)
+            original_display(*args, **kwargs)
+
+        tqdm_instance.display = new_display
+    else:
+        pass
+
+
+def check_path_exists(path, path_name):
+    if not path.exists():
+        raise Exception(f"{path_name} {path} does not exist")
 
 
 def from_vector(
@@ -17,14 +47,12 @@ def from_vector(
     overwrite: bool = False,
     filter_names: List[str] = [],
 ) -> None:
-    if not model_path.exists():
-        raise Exception(f"Model path {model_path} does not exist")
-
-    if not tide_key_path.exists():
-        raise Exception(f"Tide key path {tide_key_path} does not exist")
-
-    if not vector_path.exists():
-        raise Exception(f"Vector path {vector_path} does not exist")
+    for path, name in [
+        (model_path, "Model path"),
+        (tide_key_path, "Tide key path"),
+        (vector_path, "Vector path"),
+    ]:
+        check_path_exists(path, name)
 
     if not working_dir.exists():
         print(f"Working directory {working_dir} does not exist, creating")
@@ -42,15 +70,22 @@ def from_vector(
 
     failed = []
     inf_thread = Thread()
-    for id, row in tqdm(grid_gdf.iterrows(), total=len(filter_names)):
+
+    total_pbar = tqdm(desc="Total Progress", total=len(filter_names), position=0)
+    dl_pbar = tqdm(desc="Downloading", position=1)
+    inf_pbar = tqdm(desc="Inference", position=2)
+    patch_tqdm(dl_pbar)
+    patch_tqdm(inf_pbar)
+
+    for id, row in grid_gdf.iterrows():
         if row["Name"] not in filter_names:
             continue
-        export_path = (
+        output_path = (
             working_dir
             / f"{row['Name']}_{extract_start_year}_{extract_end_year}_pred.tif"
         )
         # Skip if already exists
-        if export_path.exists() and not overwrite:
+        if output_path.exists() and not overwrite:
             continue
         try:
             bands, profile = download_row(
@@ -58,6 +93,7 @@ def from_vector(
                 tide_key_path,
                 extract_start_year,
                 extract_end_year,
+                pbar=dl_pbar,
             )
             if inf_thread.is_alive():
                 inf_thread.join()
@@ -65,16 +101,26 @@ def from_vector(
                 failed.append(id)
                 print(f"Failed on {id}")
                 continue
+            # run_inference(
+            #     model_path=model_path,
+            #     output_path=output_path,
+            #     bands=bands,
+            #     profile=profile,
+            #     pbar=inf_pbar,
+            # )
             inf_thread = Thread(
                 target=run_inference,
-                args=(
-                    model_path,
-                    export_path,
-                    bands,
-                    profile,
-                ),
+                kwargs={
+                    "model_path": model_path,
+                    "output_path": output_path,
+                    "bands": bands,
+                    "profile": profile,
+                    "pbar": inf_pbar,
+                },
             )
+
             inf_thread.start()
+            total_pbar.update(1)
 
         except Exception as e:
             print(e)
