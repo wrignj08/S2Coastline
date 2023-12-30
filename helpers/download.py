@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from pandas import DataFrame
 import planetary_computer
 import pystac_client
@@ -8,6 +8,12 @@ import pandas as pd
 import rasterio as rio
 from tqdm.auto import tqdm
 from helpers.tide import add_tide_height
+from geopandas import GeoSeries
+from typing import List, Dict, Any
+from pystac.item import Item
+from pystac.item_collection import ItemCollection
+from pathlib import Path
+from multiprocessing.pool import ThreadPool
 
 
 def add_cloud_pct(items_df: DataFrame) -> DataFrame:
@@ -17,9 +23,7 @@ def add_cloud_pct(items_df: DataFrame) -> DataFrame:
     return items_df
 
 
-def get_band(
-    href: str, attempt: int = 0
-) -> Tuple[Optional[np.ndarray], Optional[Dict[str, Any]]]:
+def get_band(href: str, attempt: int = 0) -> Tuple[np.ndarray, Dict[str, Any]]:
     try:
         singed_href = planetary_computer.sign(href)
         with rio.open(singed_href) as src:
@@ -31,36 +35,39 @@ def get_band(
             print(f"Trying again {attempt+1}")
             return get_band(href, attempt + 1)
         else:
-            print(f"Failed to open {href} after 3 attempts")
-            return None, None
+            raise Exception(f"Failed to open {href}")
 
 
-def download_bands(items_with_tide, time_steps, required_bands, pbar):
+def download_bands_pool(
+    items_with_tide: DataFrame, time_steps: int, required_bands: List[str], pbar: tqdm
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     bands = []
-
     profile = {}
-    # pbar = tqdm(total=time_steps * len(required_bands), leave=False)
-    for id, row in items_with_tide.iterrows():
-        scene_bands = []
 
-        for band in required_bands:
-            href = row["item"].assets[band].href
-            band, profile = get_band(href)
-            if type(band) == type(None):
-                print(f"Failed to download {href}")
-                scene_bands = []
-                break
-            pbar.update(1)
+    for item in items_with_tide["item"].tolist():
+        hrefs = [item.assets[band].href for band in required_bands]
 
-            scene_bands.append(band)
-        for band in scene_bands:
-            bands.append(band)
+        try:
+            with ThreadPool(2) as pool:
+                bands_with_profile = pool.map(get_band, hrefs)
+            for band, profile in bands_with_profile:
+                bands.append(band)
+                pbar.update(1)
+        except:
+            print(f"Failed to download {item}")
+            continue
+
         if len(bands) == time_steps * len(required_bands):
-            return bands, profile
-    return bands, profile
+            return np.array(bands), profile
+
+    # fill missing bands with zeros
+    missing_bands = time_steps * len(required_bands) - len(bands)
+    for _ in range(missing_bands):
+        bands.append(np.zeros_like(bands[0]))
+    return np.array(bands), profile
 
 
-def split_by_orbits(items):
+def split_by_orbits(items: ItemCollection) -> Dict[str, List[Item]]:
     orbits = {}
     for item in items:
         orbit = item.properties["sat:relative_orbit"]
@@ -71,13 +78,15 @@ def split_by_orbits(items):
     return orbits
 
 
-def export_tif(array, profile, export_path):
-    profile.update(count=array.shape[0])
+def export_tif(array: np.ndarray, profile: Dict[str, Any], export_path: Path) -> None:
+    profile.update(count=array.shape[0], dtype=array.dtype, nodata=None)
     with rio.open(export_path, "w", **profile) as dst:
         dst.write(array)
 
 
-def get_scenes(row, extract_start_year, extract_end_year):
+def get_scenes(
+    row: GeoSeries, extract_start_year: int, extract_end_year: int
+) -> ItemCollection:
     bounds = row.geometry.buffer(-0.05)
 
     query = {
@@ -94,11 +103,19 @@ def get_scenes(row, extract_start_year, extract_end_year):
 
 
 def download_each_orbit(
-    scenes_by_orbit, row, world_tides_api_key, time_steps, required_bands
-):
-    all_orbits_bands = []
+    scenes_by_orbit: Dict[str, List[Item]],
+    row: GeoSeries,
+    world_tides_api_key: str,
+    time_steps: int,
+    required_bands: List[str],
+    band_count: int = 12,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     profile = {}
-    pbar = tqdm(total=len(scenes_by_orbit) * 12, leave=False, desc="Downloading")
+    pbar = tqdm(
+        total=len(scenes_by_orbit) * band_count, leave=False, desc="Downloading"
+    )
+    all_orbits_bands = []
+
     for orbit, scenes in scenes_by_orbit.items():
         # make df from items in orbit
         items_df = pd.DataFrame(scenes)
@@ -119,14 +136,13 @@ def download_each_orbit(
             by=["cloud_pct", "tide_height"], ascending=[True, False]
         )
         # download the required bands
-        bands, profile = download_bands(items_df, time_steps, required_bands, pbar)
+        bands, profile = download_bands_pool(items_df, time_steps, required_bands, pbar)
         all_orbits_bands.append(bands)
 
-    return all_orbits_bands, profile
+    return np.array(all_orbits_bands), profile
 
 
-def combine_orbits(all_orbits_bands, target_bands):
-    all_orbits_bands = np.array(all_orbits_bands)
+def combine_orbits(all_orbits_bands: np.ndarray, target_bands: int) -> np.ndarray:
     all_orbits_bands = np.moveaxis(all_orbits_bands, 0, 1)
 
     out_shape = (target_bands, *all_orbits_bands.shape[2:])
@@ -141,7 +157,10 @@ def combine_orbits(all_orbits_bands, target_bands):
     return out_array
 
 
-def fill_missing_data(combined_arrays, time_steps):
+def fill_missing_data(combined_arrays: np.ndarray, time_steps: int) -> np.ndarray:
+    """
+    Fills missing data in bands of a combined array using subsequent bands.
+    """
     target_bands = combined_arrays.shape[0]
     channels = target_bands // time_steps
     filled_array = np.zeros_like(combined_arrays)
@@ -150,6 +169,7 @@ def fill_missing_data(combined_arrays, time_steps):
         one_channel = combined_arrays[channel::channels]
         fall_back_values = np.zeros_like(one_channel[0])
         # sort one_channel index 0 by non zero values
+        # so that we can fill in missing data with the next band
         non_zero_counts = np.array([np.count_nonzero(slice) for slice in one_channel])
         sorted_indices = np.argsort(-non_zero_counts)
 
@@ -165,12 +185,16 @@ def fill_missing_data(combined_arrays, time_steps):
     return filled_array
 
 
-def download_row(row, tide_key_path, extract_start_year, extract_end_year):
+def download_row(
+    row: GeoSeries,
+    tide_key_path: Path,
+    extract_start_year: int,
+    extract_end_year: int,
+    required_bands: List[str] = ["B03", "B08"],
+    target_bands: int = 12,
+    time_steps: int = 6,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     world_tides_api_key = tide_key_path.read_text().strip()
-
-    required_bands = ["B03", "B08"]
-    target_bands = 12
-    time_steps = 6
 
     scenes = get_scenes(row, extract_start_year, extract_end_year)
 
@@ -197,25 +221,3 @@ def download_row(row, tide_key_path, extract_start_year, extract_end_year):
         raise Exception(f"Failed to download {row.Name}")
 
     return combined_arrays, profile
-
-
-def make_fake_data(*args):
-    """
-    Generate fake data array and profile.
-
-    Returns:
-        array (numpy.ndarray): Fake data array.
-        profile (dict): Profile containing metadata for the array.
-    """
-    array = np.random.randint(0, 10000, (12, 10980, 10980)).astype(np.uint16)
-    profile = {
-        "driver": "GTiff",
-        "dtype": "uint16",
-        "nodata": None,
-        "width": 10980,
-        "height": 10980,
-        "count": 12,
-        "crs": "EPSG:32630",
-        "transform": rio.transform.from_origin(499980.0, 4500210.0, 10.0, 10.0),  # type: ignore
-    }
-    return array, profile

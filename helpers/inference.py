@@ -6,6 +6,7 @@ from pathlib import Path
 import pickle
 import gc
 from torch import Tensor
+from typing import List, Tuple, Dict, Any, Optional
 
 BAND_IDS = [2, 4]
 MEANS = np.array(
@@ -42,7 +43,7 @@ STDS = np.array(
 )
 
 
-def default_device():
+def default_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -50,7 +51,7 @@ def default_device():
     return torch.device("cpu")
 
 
-def normalize(band_stack, device):
+def normalize(band_stack: torch.Tensor, device: torch.device) -> torch.Tensor:
     means = np.tile(MEANS[BAND_IDS], 6)
     stds = np.tile(STDS[BAND_IDS], 6)
 
@@ -60,7 +61,7 @@ def normalize(band_stack, device):
     return (band_stack / 32767 - means_tensor) / stds_tensor
 
 
-def create_gradient_mask(patch_size, patch_overlap_px):
+def create_gradient_mask(patch_size: int, patch_overlap_px: int) -> np.ndarray:
     if patch_overlap_px > 0:
         gradient_strength = 1
         gradient = np.ones((patch_size, patch_size), dtype=int) * patch_overlap_px
@@ -84,7 +85,9 @@ def create_gradient_mask(patch_size, patch_overlap_px):
     return combined_gradient
 
 
-def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
+def make_patches(
+    band_stack: np.ndarray, patch_size: int, overlap: int = 20, scene_size: int = 10980
+) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
     patches, locations = [], []
     row_count = (scene_size - overlap) // (patch_size - overlap)
     b_bar = tqdm(total=row_count, desc="Making patches", leave=False)
@@ -111,7 +114,12 @@ def make_patches(band_stack, patch_size, overlap=20, scene_size=10980):
     return patches, locations
 
 
-def stitch_preds(preds, locations, overlap=20, scene_size=10980):
+def stitch_preds(
+    preds: np.ndarray,
+    locations: List[Tuple[int, int]],
+    overlap: int = 20,
+    scene_size: int = 10980,
+) -> np.ndarray:
     gradient = create_gradient_mask(preds[0].shape[-1], overlap)
     pred_array = np.zeros((scene_size, scene_size))
     count_tracker = np.zeros((scene_size, scene_size))
@@ -132,7 +140,12 @@ def stitch_preds(preds, locations, overlap=20, scene_size=10980):
     return pred_array
 
 
-def export_pred(output_path, pred_array, profile, binary=True):
+def export_pred(
+    output_path: Path,
+    pred_array: np.ndarray,
+    profile: Dict[str, Any],
+    binary: bool = True,
+) -> None:
     profile["nodata"] = None
     if binary:
         profile.update(dtype=rio.int8, count=1, compress="lzw", driver="GTiff")
@@ -144,14 +157,9 @@ def export_pred(output_path, pred_array, profile, binary=True):
             dst.write(pred_array, 1)
 
 
-def batch_patches(patches, batch_size=10):
-    batches = []
-    for i in range(0, len(patches), batch_size):
-        batches.append(np.array(patches[i : i + batch_size]))
-    return batches
-
-
-def inference(patches, model, device, batch_size=10):
+def inference(
+    patches: List[np.ndarray], model, device: torch.device, batch_size: int = 10
+) -> np.ndarray:
     model.eval()
     tta_depth = 6
     all_preds = []
@@ -180,15 +188,15 @@ def inference(patches, model, device, batch_size=10):
 
 
 def run_inference(
-    model_path,
-    output_path,
-    bands,
-    profile,
-    patch_size=1000,
-    overlap=500,
-    binary_output=True,
-    device=None,
-):
+    model_path: Path,
+    output_path: Path,
+    bands: np.ndarray,
+    profile: Dict[str, Any],
+    patch_size: int = 1000,
+    overlap: int = 500,
+    binary_output: bool = True,
+    device: Optional[torch.device] = None,
+) -> Path:
     if device is None:
         device = default_device()
     model_name = model_path.name
