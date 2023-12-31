@@ -34,7 +34,7 @@ def patch_tqdm(tqdm_instance: tqdm) -> None:
         pass
 
 
-def check_path_exists(path, path_name):
+def check_path_exists(path: Path, path_name: str) -> None:
     if not path.exists():
         raise Exception(f"{path_name} {path} does not exist")
 
@@ -47,7 +47,7 @@ def combine_fill_and_infer(
     output_path: Path,
     model_path: Path,
     pbar: tqdm,
-):
+) -> None:
     bands = combine_and_fill(
         bands=bands, required_bands=required_bands, time_steps=time_steps, pbar=pbar
     )

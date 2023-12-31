@@ -1,10 +1,15 @@
-import requests
 import json
-from datetime import datetime
 import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import requests
+from pandas import DataFrame
+from shapely.geometry import Point
 
 
-def setup_database(db_path):
+def setup_database(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
@@ -15,7 +20,7 @@ def setup_database(db_path):
     return conn
 
 
-def query_tide_data(cursor, date, latitude, longitude):
+def query_tide_data(cursor, date, latitude, longitude) -> Optional[float]:
     """
     Query the local database for tide data.
 
@@ -36,7 +41,14 @@ def query_tide_data(cursor, date, latitude, longitude):
     return result[0] if result else None
 
 
-def store_tide_data(cursor, date, latitude, longitude, tide_height, conn):
+def store_tide_data(
+    cursor: sqlite3.Cursor,
+    date: str,
+    latitude: float,
+    longitude: float,
+    tide_height: float,
+    conn: sqlite3.Connection,
+) -> None:
     """Store new tide data in the local database."""
     cursor.execute(
         "INSERT INTO tide_data (date, latitude, longitude, tide_height) VALUES (?, ?, ?, ?)",
@@ -46,7 +58,9 @@ def store_tide_data(cursor, date, latitude, longitude, tide_height, conn):
     conn.commit()
 
 
-def add_tide_height(centroid, items_df, world_tides_api_key):
+def add_tide_height(
+    centroid: Point, items_df: DataFrame, world_tides_api_key: str
+) -> DataFrame:
     """
     Adds tide height information to the items dataframe based on the centroid coordinates and datetime information.
 
@@ -58,7 +72,7 @@ def add_tide_height(centroid, items_df, world_tides_api_key):
     Returns:
         DataFrame: The updated items dataframe with tide height information.
     """
-    db_path = "tide_data.db"
+    db_path = Path("tide_data.db")
     conn = setup_database(db_path)
     cursor = conn.cursor()
 
@@ -71,8 +85,8 @@ def add_tide_height(centroid, items_df, world_tides_api_key):
 
         # Check the database first
         tide_height = query_tide_data(cursor, date, lat, lon)
+        # If not in the database, fetch from API and store
         if tide_height is None:
-            # If not in the database, fetch from API and store
             url = f"https://www.worldtides.info/api/v3?heights&date={date}&lat={lat}&lon={lon}&key={world_tides_api_key}"
             response = requests.get(url)
             data = json.loads(response.text)
