@@ -1,8 +1,9 @@
 from pathlib import Path
 from threading import Thread
-from typing import List
+from typing import List, Dict, Any
 
 from geopandas import GeoDataFrame
+import numpy as np
 from tqdm.auto import tqdm
 
 from helpers.download import download_row
@@ -39,9 +40,17 @@ def check_path_exists(path, path_name):
 
 
 def combine_fill_and_infer(
-    bands, target_bands, time_steps, profile, output_path, model_path, pbar
+    bands: np.ndarray,
+    required_bands: List[str],
+    time_steps: int,
+    profile: Dict[str, Any],
+    output_path: Path,
+    model_path: Path,
+    pbar: tqdm,
 ):
-    bands = combine_and_fill(bands, target_bands, time_steps, pbar)
+    bands = combine_and_fill(
+        bands=bands, required_bands=required_bands, time_steps=time_steps, pbar=pbar
+    )
     run_inference(
         model_path=model_path,
         output_path=output_path,

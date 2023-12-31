@@ -64,13 +64,13 @@ def fill_missing_data(
 
 
 def combine_and_fill(
-    all_orbits_bands: np.ndarray, time_steps: int, required_bands: List[str], pbar: tqdm
+    bands: np.ndarray, required_bands: List[str], time_steps: int, pbar: tqdm
 ) -> np.ndarray:
     """
     Combines multiple orbits of bands into a single array and fills missing data.
     """
     target_band_count = time_steps * len(required_bands)
-    combined_arrays = combine_orbits(all_orbits_bands, target_band_count, pbar)
+    combined_arrays = combine_orbits(bands, target_band_count, pbar)
 
     filled_array = fill_missing_data(combined_arrays, time_steps, pbar)
     return filled_array
