@@ -42,6 +42,7 @@ def store_tide_data(cursor, date, latitude, longitude, tide_height, conn):
         "INSERT INTO tide_data (date, latitude, longitude, tide_height) VALUES (?, ?, ?, ?)",
         (date, latitude, longitude, tide_height),
     )
+
     conn.commit()
 
 
@@ -61,7 +62,6 @@ def add_tide_height(centroid, items_df, world_tides_api_key):
     conn = setup_database(db_path)
     cursor = conn.cursor()
 
-    conn = setup_database(db_path)
     results = []
     lon, lat = centroid.coords[0]
     for id, item in items_df.iterrows():

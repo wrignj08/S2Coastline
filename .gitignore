@@ -7,3 +7,4 @@ models/*.pkl
 models/*.pth
 *DS_Store
 *.pyc
+*tide_data.db
