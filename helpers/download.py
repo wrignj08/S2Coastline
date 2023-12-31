@@ -153,56 +153,12 @@ def download_each_orbit(
     return np.array(all_orbits_bands), profile
 
 
-def combine_orbits(all_orbits_bands: np.ndarray, target_bands: int) -> np.ndarray:
-    all_orbits_bands = np.moveaxis(all_orbits_bands, 0, 1)
-
-    out_shape = (target_bands, *all_orbits_bands.shape[2:])
-    out_array = np.zeros(out_shape, dtype=np.uint16)
-
-    for index, multi_orbit_bands in enumerate(all_orbits_bands):
-        target_array = np.zeros(multi_orbit_bands.shape[1:])
-        for band in multi_orbit_bands:
-            target_array[target_array == 0] = band[target_array == 0]
-        out_array[index] = target_array
-
-    return out_array
-
-
-def fill_missing_data(combined_arrays: np.ndarray, time_steps: int) -> np.ndarray:
-    """
-    Fills missing data in bands of a combined array using subsequent bands.
-    """
-    target_bands = combined_arrays.shape[0]
-    channels = target_bands // time_steps
-    filled_array = np.zeros_like(combined_arrays)
-
-    for channel in range(channels):
-        one_channel = combined_arrays[channel::channels]
-        fall_back_values = np.zeros_like(one_channel[0])
-        # sort one_channel index 0 by non zero values
-        # so that we can fill in missing data with the next band
-        non_zero_counts = np.array([np.count_nonzero(slice) for slice in one_channel])
-        sorted_indices = np.argsort(-non_zero_counts)
-
-        for band_id in sorted_indices:
-            band = one_channel[band_id]
-            fall_back_values[fall_back_values == 0] = band[fall_back_values == 0]
-
-        for id, band in enumerate(one_channel):
-            band[band == 0] = fall_back_values[band == 0]
-            one_channel[id] = band
-        filled_array[channel::channels] = one_channel
-
-    return filled_array
-
-
 def download_row(
     row: GeoSeries,
     tide_key_path: Path,
     extract_start_year: int,
     extract_end_year: int,
     required_bands: List[str] = ["B03", "B08"],
-    target_bands: int = 12,
     time_steps: int = 6,
     pbar: Optional[tqdm] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -221,15 +177,5 @@ def download_row(
     all_orbits_bands, profile = download_each_orbit(
         scenes_by_orbit, row, world_tides_api_key, time_steps, required_bands, pbar
     )
-    pbar.set_description(f"Combining {row.Name}")
-    combined_arrays = combine_orbits(all_orbits_bands, target_bands)
 
-    pbar.set_description(f"Filling {row.Name}")
-    combined_arrays = fill_missing_data(combined_arrays, time_steps)
-
-    del all_orbits_bands
-
-    if combined_arrays.shape[0] != target_bands:
-        raise Exception(f"Failed to download {row.Name}")
-
-    return combined_arrays, profile
+    return all_orbits_bands, profile
