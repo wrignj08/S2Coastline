@@ -6,6 +6,7 @@ from geopandas import GeoDataFrame
 from tqdm.auto import tqdm
 
 from helpers.download import download_row
+from helpers.orbit_merge import combine_and_fill
 from helpers.inference import run_inference
 
 
@@ -37,6 +38,19 @@ def check_path_exists(path, path_name):
         raise Exception(f"{path_name} {path} does not exist")
 
 
+def combine_fill_and_infer(
+    bands, target_bands, time_steps, profile, output_path, model_path, pbar
+):
+    bands = combine_and_fill(bands, target_bands, time_steps, pbar)
+    run_inference(
+        model_path=model_path,
+        output_path=output_path,
+        bands=bands,
+        profile=profile,
+        pbar=pbar,
+    )
+
+
 def from_vector(
     vector_path: Path,
     model_path: Path,
@@ -46,6 +60,8 @@ def from_vector(
     extract_end_year: int,
     overwrite: bool = False,
     filter_names: List[str] = [],
+    time_steps: int = 6,
+    required_bands: List[str] = ["B03", "B08"],
 ) -> None:
     for path, name in [
         (model_path, "Model path"),
@@ -73,7 +89,7 @@ def from_vector(
 
     total_pbar = tqdm(desc="Total Progress", total=len(filter_names), position=0)
     dl_pbar = tqdm(desc="Downloading", position=1, total=10)
-    inf_pbar = tqdm(desc="Waiting to start Inference", position=2, total=10)
+    inf_pbar = tqdm(desc="Waiting for download", position=2, total=10)
     patch_tqdm(dl_pbar)
     patch_tqdm(inf_pbar)
 
@@ -96,6 +112,8 @@ def from_vector(
                 extract_start_year,
                 extract_end_year,
                 pbar=dl_pbar,
+                time_steps=time_steps,
+                required_bands=required_bands,
             )
             if inf_thread.is_alive():
                 inf_thread.join()
@@ -105,12 +123,14 @@ def from_vector(
                 continue
 
             inf_thread = Thread(
-                target=run_inference,
+                target=combine_fill_and_infer,
                 kwargs={
                     "model_path": model_path,
                     "output_path": output_path,
                     "bands": bands,
                     "profile": profile,
+                    "required_bands": required_bands,
+                    "time_steps": time_steps,
                     "pbar": inf_pbar,
                 },
             )
