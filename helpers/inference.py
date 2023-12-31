@@ -186,10 +186,10 @@ def inference(
     model,
     device: torch.device,
     batch_size: int = 10,
+    roll_tta_depth: int = 5,
+    rotate_tta_depth: int = 1,
     pbar: Optional[tqdm] = None,
 ) -> np.ndarray:
-    model.eval()
-    tta_depth = 6
     all_preds = []
     batch_count = len(patches) // batch_size
     if pbar is None:
@@ -197,8 +197,9 @@ def inference(
 
     pbar.reset()
     pbar.total = batch_count
-    pbar.set_description("Inference")
+    pbar.set_description(f"Inference on {device.type}")
 
+    model.eval()
     with torch.no_grad():
         for batch_id in range(batch_count):
             batch = patches[batch_id * batch_size : (batch_id + 1) * batch_size]
@@ -208,11 +209,19 @@ def inference(
             batch = normalize(batch, device)
 
             tta_preds = []
-            for tta in range(tta_depth):
-                # Creating augmented batch for TTA
-                augmented_batch = torch.roll(batch, shifts=2 * tta, dims=1)
+            # apply TTA rotations
+            for rotate_tta in range(rotate_tta_depth):
+                batch = torch.rot90(batch, rotate_tta, [2, 3])
+                # apply TTA rolls
+                for roll_tta in range(roll_tta_depth):
+                    # creating augmented batch for TTA
+                    rolled_batch = torch.roll(batch, shifts=2 * roll_tta, dims=1)
 
-                tta_preds.append(model(augmented_batch))
+                    pred = model(rolled_batch)
+                    # remove TTA rotation
+                    pred = torch.rot90(pred, -rotate_tta, [2, 3])
+
+                    tta_preds.append(pred)
 
             # Calculating the mean across all TTA predictions
             mean_pred = torch.stack(tta_preds).mean(dim=0).cpu().numpy()
