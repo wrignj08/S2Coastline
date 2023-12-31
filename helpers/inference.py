@@ -186,8 +186,8 @@ def inference(
     model,
     device: torch.device,
     batch_size: int = 10,
-    roll_tta_depth: int = 5,
-    rotate_tta_depth: int = 1,
+    roll_tta_depth: int = 6,
+    rotate_tta_depth: int = 2,
     pbar: Optional[tqdm] = None,
 ) -> np.ndarray:
     all_preds = []
@@ -196,7 +196,7 @@ def inference(
         pbar = tqdm(leave=False)
 
     pbar.reset()
-    pbar.total = batch_count
+    pbar.total = batch_count * roll_tta_depth * rotate_tta_depth
     pbar.set_description(f"Inference on {device.type}")
 
     model.eval()
@@ -222,11 +222,12 @@ def inference(
                     pred = torch.rot90(pred, -rotate_tta, [2, 3])
 
                     tta_preds.append(pred)
+                    pbar.update(1)
+                    pbar.refresh()
 
             # Calculating the mean across all TTA predictions
             mean_pred = torch.stack(tta_preds).mean(dim=0).cpu().numpy()
             all_preds.extend(mean_pred)
-            pbar.update(1)
 
     return np.array(all_preds)
 
