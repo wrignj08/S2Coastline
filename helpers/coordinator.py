@@ -60,7 +60,7 @@ def combine_fill_and_infer(
     )
 
 
-def from_vector(
+def processor(
     vector_path: Path,
     model_path: Path,
     working_dir: Path,

@@ -1,14 +1,17 @@
 {
     "cSpell.words": [
         "astype",
+        "chaikin",
         "dataframe",
         "dstack",
         "dtype",
         "geopandas",
+        "gpkg",
         "hrefs",
         "iloc",
         "iterrows",
         "moveaxis",
+        "multiprocess",
         "ncols",
         "ndarray",
         "pbar",
@@ -17,7 +20,9 @@
         "rasterio",
         "regnety",
         "reproject",
+        "sjoin",
         "stds",
-        "tqdm"
+        "tqdm",
+        "vectorize"
     ]
 }
