@@ -17,10 +17,27 @@ from tqdm.auto import tqdm
 from helpers.tide import add_tide_height
 
 
-def add_cloud_pct(items_df: DataFrame) -> DataFrame:
-    items_df["cloud_pct"] = items_df.apply(
-        lambda row: row.iloc[0].properties["eo:cloud_cover"], axis=1
+def add_bad_pixel_pct(items_df: DataFrame) -> DataFrame:
+    items_df["cloud"] = items_df.apply(
+        lambda row: row.iloc[0].properties["s2:high_proba_clouds_percentage"], axis=1
     )
+    # also do cloud_shadow_percentage and snow_ice_percentage
+    items_df["shadow"] = items_df.apply(
+        lambda row: row.iloc[0].properties["s2:cloud_shadow_percentage"], axis=1
+    )
+
+    items_df["ice"] = items_df.apply(
+        lambda row: row.iloc[0].properties["s2:snow_ice_percentage"], axis=1
+    )
+    # s2:water_percentage
+    items_df["water"] = items_df.apply(
+        lambda row: row.iloc[0].properties["s2:water_percentage"], axis=1
+    )
+
+    items_df["bad_pixel_pct"] = (
+        items_df["ice"] + items_df["shadow"] + items_df["cloud"]
+    ) - items_df["water"]
+
     return items_df
 
 
@@ -101,6 +118,7 @@ def get_scenes(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
     )
     scenes = catalog.search(**query).item_collection()
+    # print(scenes[0].properties.keys())
     return scenes
 
 
@@ -120,35 +138,40 @@ def download_each_orbit(
     pbar.set_description(f"Downloading {row.Name}")
     all_orbits_bands = []
 
+    all_nonzero = []
     for orbit, scenes in scenes_by_orbit.items():
         # make df from items in orbit
         items_df = pd.DataFrame(scenes)
         items_df.columns = ["item"]
 
-        items_df = add_cloud_pct(items_df)
-        # sort by cloud cover
-        items_df = items_df.sort_values(by="cloud_pct", ascending=True)
+        items_df = add_bad_pixel_pct(items_df)
+        # sort by bad pixel pct
+        items_df = items_df.sort_values(by="bad_pixel_pct", ascending=True)
         # only keep the top 20 scenes
         items_df = items_df[:20]
         items_df = add_tide_height(row.geometry.centroid, items_df, world_tides_api_key)
-        # round tide height to nearest 10
-        items_df["cloud_pct"] = items_df["cloud_pct"].apply(
+
+        # round bad pixels to nearest 10
+        items_df["bad_pixel_pct"] = items_df["bad_pixel_pct"].apply(
             lambda x: round(x / 10) * 10
         )
         # Sort by cloud_pct and then by tide_height
         items_df = items_df.sort_values(
-            by=["cloud_pct", "tide_height"], ascending=[True, False]
+            by=["bad_pixel_pct", "tide_height"], ascending=[True, False]
         )
         # download the required bands
         bands, profile = download_bands_pool(items_df, time_steps, required_bands, pbar)
 
+        all_orbits_bands.append(bands)
+
         # check if any 0s in bands
-        if np.count_nonzero(bands) == bands.size:
+        all_nonzero.append(np.count_nonzero(bands, axis=0))
+        full_nonzero_count = np.sum(np.array(all_nonzero), axis=0)
+
+        if np.min(full_nonzero_count) >= 6:
             # got entire scene, no need to continue
-            all_orbits_bands.append(bands)
             pbar.update(band_count - pbar.n)
             return np.array(all_orbits_bands), profile
-        all_orbits_bands.append(bands)
 
     return np.array(all_orbits_bands), profile
 

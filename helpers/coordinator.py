@@ -129,6 +129,7 @@ def processor(
             if bands is None:
                 failed.append(id)
                 print(f"Failed on {id}")
+                total_pbar.update(1)
                 continue
 
             inf_thread = Thread(
@@ -151,4 +152,6 @@ def processor(
             print(e)
             failed.append(id)
             print(f"Failed on {id}")
+            total_pbar.update(1)
             continue
+    total_pbar.close()
