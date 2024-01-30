@@ -6,6 +6,8 @@ from geopandas import GeoDataFrame
 import numpy as np
 from tqdm.auto import tqdm
 
+# import rasterio as rio
+
 from helpers.download import download_row
 from helpers.orbit_merge import combine_and_fill
 from helpers.inference import run_inference
@@ -49,8 +51,12 @@ def combine_fill_and_infer(
     pbar: tqdm,
 ) -> None:
     bands = combine_and_fill(
-        bands=bands, required_bands=required_bands, time_steps=time_steps, pbar=pbar
+        bands=bands,
+        required_bands=required_bands,
+        time_steps=time_steps,
+        pbar=pbar,
     )
+
     run_inference(
         model_path=model_path,
         output_path=output_path,
@@ -71,6 +77,7 @@ def processor(
     filter_names: List[str] = [],
     time_steps: int = 6,
     required_bands: List[str] = ["B03", "B08"],
+    save_scene: bool = False,
 ) -> None:
     for path, name in [
         (model_path, "Model path"),
@@ -115,20 +122,25 @@ def processor(
             total_pbar.refresh()
             continue
         try:
-            bands, profile = download_row(
+            (
+                bands,
+                profile,
+            ) = download_row(
                 row,
                 tide_key_path,
                 extract_start_year,
                 extract_end_year,
+                working_dir=working_dir,
                 pbar=dl_pbar,
                 time_steps=time_steps,
                 required_bands=required_bands,
+                save_scene=save_scene,
             )
             if inf_thread.is_alive():
                 inf_thread.join()
             if bands is None:
-                failed.append(id)
-                print(f"Failed on {id}")
+                failed.append(row["Name"])
+                print(f"Failed on {row['Name']}")
                 total_pbar.update(1)
                 continue
 
@@ -150,8 +162,11 @@ def processor(
 
         except Exception as e:
             print(e)
-            failed.append(id)
-            print(f"Failed on {id}")
+            failed.append(row["Name"])
+            print(f"Failed on {row['Name']}")
             total_pbar.update(1)
             continue
+    # hold until all inference threads are finished
+    if inf_thread.is_alive():
+        inf_thread.join()
     total_pbar.close()

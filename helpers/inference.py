@@ -47,14 +47,14 @@ STDS = np.array(
 def default_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif torch.backends.mps.is_available():
+    elif torch.backends.mps.is_available():  # type: ignore
         return torch.device("mps")
     return torch.device("cpu")
 
 
 def normalize(band_stack: torch.Tensor, device: torch.device) -> torch.Tensor:
-    means = np.tile(MEANS[BAND_IDS], 6)
-    stds = np.tile(STDS[BAND_IDS], 6)
+    means = np.tile(MEANS[BAND_IDS], 6)  # type: ignore
+    stds = np.tile(STDS[BAND_IDS], 6)  # type: ignore
 
     means_tensor = Tensor(means).view(1, -1, 1, 1).to(device).half()
     stds_tensor = Tensor(stds).view(1, -1, 1, 1).to(device).half()
@@ -267,7 +267,8 @@ def run_inference(
     pred_array = stitch_preds(preds, locations, overlap, scene_size, pbar=pbar)
 
     export_pred(output_path, pred_array, profile, binary_output, pbar=pbar)
-    pbar.reset()
+    # pbar.reset()
+    pbar.refresh()
     pbar.set_description("Waiting to start Inference")
     del pred_array
     del preds

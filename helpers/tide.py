@@ -94,6 +94,16 @@ def add_tide_height(
             min_diff = float("inf")
             closest_entry = {}
             target_timestamp = dt_obj.timestamp()
+            try:
+                data["heights"]
+            except KeyError:
+                print(f"No tide data found setting all tide heights to 0")
+                # fill with 0 and return
+                tide_height = 0
+                items_df["tide_height"] = tide_height
+                return items_df
+                # continue
+
             for entry in data["heights"]:
                 diff = abs(entry["dt"] - target_timestamp)
                 if diff < min_diff:
