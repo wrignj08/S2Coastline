@@ -3,10 +3,14 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import json
 
 import requests
 from pandas import DataFrame
 from shapely.geometry import Point
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
 
 
 def setup_database(db_path: Path) -> sqlite3.Connection:
@@ -120,3 +124,58 @@ def add_tide_height(
     conn.close()
 
     return items_df
+
+
+def get_worldtides_credit(creds_json: Optional[Path] = None) -> Optional[int]:
+    if creds_json is None:
+        creds_json = Path("world_tide_creds.json")
+
+    with open(creds_json) as f:
+        creds = json.load(f)
+        email = creds["email"]
+        password = creds["password"]
+    # Setup the Chrome WebDriver
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    driver = webdriver.Chrome(options=options)
+
+    try:
+        # Navigate to the login page
+        driver.get("https://www.worldtides.info/login")
+
+        driver.implicitly_wait(
+            10
+        )  # Wait up to 10 seconds for the elements to become available
+
+        # Locate the email and password fields and input the creds
+        email_field = driver.find_element(
+            By.XPATH, '//input[@placeholder="Email address"]'
+        )
+        password_field = driver.find_element(
+            By.XPATH, '//input[@placeholder="Password"]'
+        )
+
+        email_field.send_keys(email)
+        password_field.send_keys(password)
+
+        # Submit
+        password_field.send_keys(Keys.RETURN)
+
+        # Navigate to overview
+        driver.get("https://www.worldtides.info/overview")
+
+        driver.implicitly_wait(10)
+
+        # Find the div containing <h4>Prepaid</h4> and then find the <h3> within this div
+        prepaid_div = driver.find_element(
+            By.XPATH, '//h4[text()="Prepaid"]/ancestor::div[h1]'
+        )
+        h1_value = prepaid_div.find_element(By.TAG_NAME, "h1").text
+
+        driver.quit()
+
+        return int(h1_value)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        driver.quit()

@@ -144,14 +144,15 @@ def stitch_preds(
 
     for pred, location in zip(preds, locations):
         top, left = location
-        pred_array[top : top + pred.shape[-1], left : left + pred.shape[-1]] = (
-            pred_array[top : top + pred.shape[-1], left : left + pred.shape[-1]]
-            + pred * gradient
+        pred_array[top : top + pred.shape[-1], left : left + pred.shape[-1]] += (
+            pred[0] * gradient
         )
+
         count_tracker[
             top : top + pred.shape[-1], left : left + pred.shape[-1]
         ] += gradient
         pbar.update(1)
+
     pred_array = pred_array / count_tracker
 
     return pred_array
@@ -270,6 +271,8 @@ def run_inference(
     # pbar.reset()
     pbar.refresh()
     pbar.set_description("Waiting to start Inference")
+    pbar.n = 0
+    pbar.total = 1
     del pred_array
     del preds
     gc.collect()

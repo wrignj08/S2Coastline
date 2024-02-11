@@ -166,14 +166,14 @@ def split_by_orbits(items: ItemCollection) -> Dict[str, List[Item]]:
         else:
             orbits[orbit].append(item)
             orbits_no_data[orbit].append(float(no_data_pct))
-            
+
     # loop over orbits_no_data
     for orbit, no_data in orbits_no_data.items():
         # convert to mean of no_data
         orbits_no_data[orbit] = np.mean(no_data)
     # sort orbits by no_data
     orbits = dict(sorted(orbits.items(), key=lambda item: orbits_no_data[item[0]]))
-        
+
     return orbits
 
 
@@ -208,19 +208,34 @@ def download_each_orbit(
     world_tides_api_key: str,
     time_steps: int,
     required_bands: List[str],
+    use_tides: bool,
     pbar: tqdm,
     band_count: int = 12,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     profile = {}
 
     pbar.reset()
-    pbar.total = len(scenes_by_orbit) * band_count
+    # pbar.total = len(scenes_by_orbit) * band_count
     pbar.set_description(f"Downloading {row.Name}")
     all_orbits_bands = []
 
     # add scene classificaion to required bands
 
     all_nonzero = []
+
+    keys = list(scenes_by_orbit.keys())
+    orbit_limit = 6
+    # get 10 random orbits
+
+    if len(keys) > orbit_limit:
+        print(f"Limiting to {orbit_limit} orbits from {len(keys)}")
+        # keys.sort()
+        keys = keys[:orbit_limit]
+        # limit to 10 orbits
+        scenes_by_orbit = {k: scenes_by_orbit[k] for k in keys}
+        print(f"New length {len(scenes_by_orbit)}")
+    pbar.total = len(scenes_by_orbit) * band_count
+
     for orbit, scenes in scenes_by_orbit.items():
         # make df from items in orbit
         items_df = pd.DataFrame(scenes)
@@ -231,7 +246,12 @@ def download_each_orbit(
         items_df = items_df.sort_values(by="bad_pixel_pct", ascending=True)
         # only keep the top 20 scenes
         items_df = items_df[:20]
-        items_df = add_tide_height(row.geometry.centroid, items_df, world_tides_api_key)
+        if use_tides:
+            items_df = add_tide_height(
+                row.geometry.centroid, items_df, world_tides_api_key
+            )
+        else:
+            items_df["tide_height"] = 0
 
         # round bad pixels to nearest 10
         items_df["bad_pixel_pct"] = items_df["bad_pixel_pct"].apply(
@@ -258,11 +278,13 @@ def download_each_orbit(
         # if all x,y have at least 12 bands, we can stop
         # print(np.min(full_nonzero_count))
         if np.min(full_nonzero_count) >= band_count:
-            
             # got entire scene, no need to continue
             pbar.update(band_count - pbar.n)
+            pbar.refresh()
             return np.array(all_orbits_bands), profile
+
     pbar.update(band_count - pbar.n)
+    pbar.refresh()
 
     return np.array(all_orbits_bands), profile
 
@@ -277,6 +299,7 @@ def download_row(
     time_steps: int = 6,
     pbar: Optional[tqdm] = None,
     save_scene: bool = False,
+    use_tides: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     if pbar is None:
         pbar = tqdm(leave=False)
@@ -291,7 +314,13 @@ def download_row(
     scenes_by_orbit = split_by_orbits(scenes)
 
     all_orbits_bands, profile = download_each_orbit(
-        scenes_by_orbit, row, world_tides_api_key, time_steps, required_bands, pbar
+        scenes_by_orbit,
+        row,
+        world_tides_api_key,
+        time_steps,
+        required_bands,
+        use_tides,
+        pbar,
     )
 
     if save_scene:

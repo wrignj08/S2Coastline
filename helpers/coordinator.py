@@ -41,20 +41,14 @@ def check_path_exists(path: Path, path_name: str) -> None:
         raise Exception(f"{path_name} {path} does not exist")
 
 
-def combine_fill_and_infer(
-    bands: np.ndarray,
-    required_bands: List[str],
-    time_steps: int,
-    profile: Dict[str, Any],
-    output_path: Path,
-    model_path: Path,
-    pbar: tqdm,
-) -> None:
+def merge_and_inf(
+    bands, model_path, output_path, profile, time_steps, required_bands, inf_pbar
+):
     bands = combine_and_fill(
         bands=bands,
         required_bands=required_bands,
         time_steps=time_steps,
-        pbar=pbar,
+        pbar=inf_pbar,
     )
 
     run_inference(
@@ -62,7 +56,7 @@ def combine_fill_and_infer(
         output_path=output_path,
         bands=bands,
         profile=profile,
-        pbar=pbar,
+        pbar=inf_pbar,
     )
 
 
@@ -77,7 +71,9 @@ def processor(
     filter_names: List[str] = [],
     time_steps: int = 6,
     required_bands: List[str] = ["B03", "B08"],
+    use_tides: bool = False,
     save_scene: bool = False,
+    fast_mode: bool = True,
 ) -> None:
     for path, name in [
         (model_path, "Model path"),
@@ -135,6 +131,7 @@ def processor(
                 time_steps=time_steps,
                 required_bands=required_bands,
                 save_scene=save_scene,
+                use_tides=use_tides,
             )
             if inf_thread.is_alive():
                 inf_thread.join()
@@ -145,19 +142,21 @@ def processor(
                 continue
 
             inf_thread = Thread(
-                target=combine_fill_and_infer,
-                kwargs={
-                    "model_path": model_path,
-                    "output_path": output_path,
-                    "bands": bands,
-                    "profile": profile,
-                    "required_bands": required_bands,
-                    "time_steps": time_steps,
-                    "pbar": inf_pbar,
-                },
+                target=merge_and_inf,
+                args=(
+                    bands,
+                    model_path,
+                    output_path,
+                    profile,
+                    time_steps,
+                    required_bands,
+                    inf_pbar,
+                ),
             )
 
             inf_thread.start()
+            if not fast_mode:
+                inf_thread.join()
             total_pbar.update(1)
 
         except Exception as e:

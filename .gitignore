@@ -13,3 +13,4 @@ models/*.pth
 check tide api credits.ipynb
 data/S-2 grid coastal SA.gpkg
 system monitor.ipynb
+world_tide_creds.json
